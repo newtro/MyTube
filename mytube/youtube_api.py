@@ -373,15 +373,20 @@ def iter_liked_video_pages(
     page_token: str | None = None,
     counter: ApiCallCounter | None = None,
 ):
-    """Yield one LikedPage per videos.list(myRating=liked) page (~1 unit
+    """Yield one LikedPage per videos.list(myRating=like) page (~1 unit
     each, FLOW-23). ``page_token`` resumes a previous night's backfill —
     with tens of thousands of likes and the daily 'sync' cap, the first
     import can span several nights and must not restart at page 1 each
-    time. Malformed envelopes fail closed."""
+    time. Malformed envelopes fail closed.
+
+    myRating is 'like' (singular) — the API's allowed values are
+    none|like|dislike. 'liked' raises TypeError in the client's parameter
+    validation, which fake test clients don't reproduce.
+    """
     while True:
         request = youtube.videos().list(
             part="snippet",
-            myRating="liked",
+            myRating="like",
             maxResults=50,
             pageToken=page_token,
         )

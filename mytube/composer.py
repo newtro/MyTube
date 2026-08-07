@@ -158,6 +158,92 @@ def _hash_ids(ids: list[str]) -> str:
     return hashlib.sha256("\n".join(sorted(ids)).encode()).hexdigest()
 
 
+def channel_half_lives(
+    conn: psycopg.Connection, settings: Settings
+) -> dict[str, float]:
+    """Per-channel freshness half-life derived from upload cadence.
+
+    A channel's median gap between consecutive uploads says how fast its
+    content is superseded: post daily and a week-old video sits behind
+    seven newer ones; post monthly and it is still the latest. Shorts are
+    excluded — they follow a different cadence and are not candidates
+    anyway. Channels with fewer than ``freshness_cadence_min_samples`` gaps
+    are omitted, and the caller falls back to the fixed half-life.
+    """
+    rows = conn.execute(
+        """
+        WITH gaps AS (
+            SELECT channel_id,
+                   EXTRACT(EPOCH FROM (
+                       published_at - lag(published_at) OVER (
+                           PARTITION BY channel_id ORDER BY published_at)
+                   )) / 86400.0 AS gap_days
+            FROM videos
+            WHERE channel_id IS NOT NULL AND published_at IS NOT NULL
+              AND NOT COALESCE(is_short, FALSE)
+        )
+        SELECT channel_id,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY gap_days) AS median_gap
+        FROM gaps
+        WHERE gap_days IS NOT NULL AND gap_days > 0
+        GROUP BY channel_id
+        HAVING count(*) >= %(min_samples)s
+        """,
+        {"min_samples": settings.freshness_cadence_min_samples},
+    ).fetchall()
+    out: dict[str, float] = {}
+    for r in rows:
+        if not r["median_gap"]:
+            continue
+        out[r["channel_id"]] = min(
+            max(
+                float(r["median_gap"]) * settings.freshness_cadence_multiplier,
+                settings.freshness_half_life_min_days,
+            ),
+            settings.freshness_half_life_max_days,
+        )
+    return out
+
+
+def _half_life_for(
+    candidate: dict,
+    user_settings: dict,
+    settings: Settings,
+    half_lives: dict[str, float] | None,
+) -> float:
+    """The candidate's effective half-life: its channel's cadence-derived
+    value when adaptive mode is on and we have enough history, otherwise
+    the user's fixed setting (then the server default)."""
+    fixed = (
+        user_settings.get("freshness_half_life_days")
+        or settings.freshness_half_life_days
+    )
+    if not user_settings.get("freshness_adaptive", True) or not half_lives:
+        return fixed
+    return half_lives.get(candidate.get("channel_id"), fixed)
+
+
+def _freshness_penalty(
+    published_at, now: datetime, half_life_days: float, weight: float
+) -> float:
+    """§6 rules layer: demote by PUBLISH age on a bounded exponential.
+
+    penalty = weight * (1 - 0.5 ** (age_days / half_life))
+
+    At age 0 it is 0; at the half-life it is half of ``weight``; it
+    asymptotes to ``weight`` and never exceeds it, so an old video is
+    pushed down but a genuinely strong match is never inverted into
+    negative territory. Unknown publish dates are NOT penalized (we don't
+    punish missing metadata), and future timestamps clamp to 0.
+    """
+    if not weight or published_at is None or half_life_days <= 0:
+        return 0.0
+    age_days = (now - published_at).total_seconds() / 86400.0
+    if age_days <= 0:
+        return 0.0
+    return weight * (1.0 - 0.5 ** (age_days / half_life_days))
+
+
 def _duration_fit_penalty(
     duration_seconds, typical_duration, weight: float
 ) -> float:
@@ -196,6 +282,7 @@ def plan_edition(
     rng_seed: int,
     now: datetime | None = None,
     typical_duration: float | None = None,
+    half_lives: dict[str, float] | None = None,
 ) -> dict:
     """Pure planning: pool -> ordered selection dicts. DB-free and fully
     deterministic given (pool, settings, seed) — the AC-39 test surface.
@@ -212,12 +299,28 @@ def plan_edition(
     )
     median = scored[len(scored) // 2] if scored else None
 
-    # stage 1 eligibility: unscored, below-median score, or fatigued (AC-4)
+    # stage 1 eligibility: unscored, below-median score, or fatigued (AC-4),
+    # and not ancient. The age ceiling bounds the ELIGIBLE SET; the draw
+    # over it stays uniform, so every logged propensity is still exactly
+    # 1/|remaining| against the snapshot recorded here (AC-39).
+    max_age = settings.exploration_max_age_days
+
+    def _recent_enough(c: dict) -> bool:
+        if not max_age:
+            return True
+        published = c.get("published_at")
+        if published is None:
+            return True                      # unknown date isn't a strike
+        return (now - published).total_seconds() / 86400.0 <= max_age
+
     explore_eligible = [
         c for c in pool
-        if c["score"] is None
-        or (median is not None and c["score"] <= median)
-        or c["unclicked_impressions"] >= fatigue_n
+        if _recent_enough(c)
+        and (
+            c["score"] is None
+            or (median is not None and c["score"] <= median)
+            or c["unclicked_impressions"] >= fatigue_n
+        )
     ]
     explore_ids = [c["video_id"] for c in explore_eligible]
     explore_hash = _hash_ids(explore_ids)
@@ -273,6 +376,13 @@ def plan_edition(
             c.get("duration_seconds"),
             typical_duration,
             user_settings.get("duration_fit_weight") or 0,
+        )
+        base -= _freshness_penalty(
+            c.get("published_at"), now,
+            _half_life_for(c, user_settings, settings, half_lives),
+            user_settings.get("freshness_weight")
+            if user_settings.get("freshness_weight") is not None
+            else settings.freshness_weight,
         )
         return base
 
@@ -408,6 +518,7 @@ def compose_edition(
     plan = plan_edition(
         pool, settings, user_settings, rng_seed=rng_seed, now=now,
         typical_duration=typical_watched_duration(conn, user_id),
+        half_lives=channel_half_lives(conn, settings),
     )
     if not plan["picks"]:
         raise ComposeError("no eligible cards after planning")
@@ -584,6 +695,7 @@ def replace_selection(
     replace_settings = get_user_settings(conn, user_id)
     penalty = replace_settings["staleness_penalty_per_day"]
     typical = typical_watched_duration(conn, user_id)
+    repl_half_lives = channel_half_lives(conn, settings)
 
     def adjusted(c: dict) -> float:
         base = c["score"]
@@ -594,6 +706,15 @@ def replace_selection(
         base -= _duration_fit_penalty(
             c.get("duration_seconds"), typical,
             replace_settings.get("duration_fit_weight") or 0,
+        )
+        # a replacement card must be judged on freshness too, or swapping a
+        # dead card silently reintroduces the staleness we just fixed
+        base -= _freshness_penalty(
+            c.get("published_at"), now,
+            _half_life_for(c, replace_settings, settings, repl_half_lives),
+            replace_settings.get("freshness_weight")
+            if replace_settings.get("freshness_weight") is not None
+            else settings.freshness_weight,
         )
         return base
 

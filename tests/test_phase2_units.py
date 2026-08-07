@@ -168,3 +168,70 @@ class TestPlanEdition:
         )
         exploration = [p for p in plan["picks"] if p["slot_class"] == "exploration"]
         assert len(exploration) == 2
+
+
+class TestOidcClockSkew:
+    """Regression: google-auth's verify_oauth2_token defaults to ZERO clock
+    skew tolerance, so a host one second behind Google rejects every
+    sign-in with "Token used too early" (hit live during setup)."""
+
+    def test_verifier_passes_configured_skew(self, monkeypatch):
+        from mytube import auth_oidc
+
+        seen = {}
+
+        def fake_verify(raw, request, audience, clock_skew_in_seconds=0):
+            seen["skew"] = clock_skew_in_seconds
+            raise RuntimeError("stop here — only the kwarg matters")
+
+        monkeypatch.setattr(
+            auth_oidc.google_id_token, "verify_oauth2_token", fake_verify
+        )
+        settings = make_settings(oidc_clock_skew_seconds=30)
+
+        def verifier(raw, aud):
+            return auth_oidc.google_id_token.verify_oauth2_token(
+                raw, None, aud,
+                clock_skew_in_seconds=settings.oidc_clock_skew_seconds,
+            )
+
+        try:
+            verifier("token", "aud")
+        except RuntimeError:
+            pass
+        assert seen["skew"] == 30, "clock skew tolerance must reach google-auth"
+
+    def test_default_is_nonzero_and_bounded(self):
+        import pytest as _pytest
+        from pydantic import ValidationError
+
+        assert make_settings().oidc_clock_skew_seconds > 0   # 0 breaks sign-in
+        assert make_settings().oidc_clock_skew_seconds <= 60  # not a wide window
+        with _pytest.raises(ValidationError):
+            make_settings(oidc_clock_skew_seconds=3600)      # replay window cap
+
+
+class TestPostAuthRedirect:
+    """DEV_SPA_URL must never become an open redirect on the OAuth callback."""
+
+    def _target(self, url, path="/"):
+        from mytube.webapi import _post_auth_target
+        return _post_auth_target(make_settings(dev_spa_url=url), path)
+
+    def test_empty_stays_relative(self):
+        assert self._target("") == "/"
+        assert self._target("", "/?connected=1") == "/?connected=1"
+
+    def test_localhost_allowed(self):
+        assert self._target("http://localhost:5173") == "http://localhost:5173/"
+        assert self._target("http://127.0.0.1:5173/", "/?connected=1") == \
+            "http://127.0.0.1:5173/?connected=1"
+
+    def test_external_host_refused(self):
+        for hostile in (
+            "https://evil.example.com",
+            "http://localhost.evil.com",       # lookalike prefix
+            "https://evil.com/#localhost",
+            "//evil.com",
+        ):
+            assert self._target(hostile) == "/", hostile

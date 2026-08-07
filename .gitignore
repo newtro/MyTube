@@ -17,3 +17,6 @@ web/dist/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Browser-automation artifacts (Playwright MCP session dumps/downloads)
+.playwright-mcp/

@@ -54,3 +54,47 @@ class TestFetch:
         client = self._client(lambda req: httpx.Response(200, text="<not-xml"))
         with pytest.raises(FeedError, match="malformed"):
             fetch_channel_uploads(client, "UCbad")
+
+
+class TestChannelIdPrefix:
+    """Regression (found live): YouTube's FEED-level <yt:channelId> omits the
+    leading 'UC', so trusting it produced a 22-char id that violated the
+    videos->channels FK. Entry-level ids are full length."""
+
+    FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"
+      xmlns="http://www.w3.org/2005/Atom">
+ <id>yt:channel:DRIjKy6eZOvKtOELtTdeUA</id>
+ <yt:channelId>DRIjKy6eZOvKtOELtTdeUA</yt:channelId>
+ <title>Breaking Points</title>
+ <author><name>Breaking Points</name></author>
+ <entry>
+  <id>yt:video:cMzZp06vS_I</id>
+  <yt:videoId>cMzZp06vS_I</yt:videoId>
+  <yt:channelId>UCDRIjKy6eZOvKtOELtTdeUA</yt:channelId>
+  <title>An episode</title>
+  <published>2026-08-07T10:00:00+00:00</published>
+ </entry>
+</feed>"""
+
+    def test_requested_id_wins(self):
+        from mytube.rss import parse_feed
+        entries = parse_feed(self.FEED, "UCDRIjKy6eZOvKtOELtTdeUA")
+        assert entries[0].channel_id == "UCDRIjKy6eZOvKtOELtTdeUA"
+        assert len(entries[0].channel_id) == 24
+
+    def test_entry_level_id_beats_feed_level(self):
+        """Without a requested id, prefer the entry's full-length id."""
+        from mytube.rss import parse_feed
+        entries = parse_feed(self.FEED)
+        assert entries[0].channel_id == "UCDRIjKy6eZOvKtOELtTdeUA"
+
+    def test_feed_level_alone_is_never_silently_truncated(self):
+        """A feed with ONLY the short id still yields something, but the
+        caller-supplied id must override it."""
+        from mytube.rss import parse_feed
+        short_only = self.FEED.replace(
+            "  <yt:channelId>UCDRIjKy6eZOvKtOELtTdeUA</yt:channelId>\n", ""
+        )
+        assert parse_feed(short_only, "UCDRIjKy6eZOvKtOELtTdeUA")[0].channel_id \
+            == "UCDRIjKy6eZOvKtOELtTdeUA"

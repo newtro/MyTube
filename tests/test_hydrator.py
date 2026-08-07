@@ -318,3 +318,42 @@ class TestRetry:
                 return outcome
 
         assert _execute_with_retry(Flaky(), sleep=lambda s: None) == {"items": []}
+
+
+class TestApiParameterValues:
+    """Regression: fake clients accept any kwarg, so a value the real API
+    rejects (myRating='liked' vs the allowed none|like|dislike) sailed
+    through every test and only failed against live Google."""
+
+    ALLOWED_MY_RATING = {"none", "like", "dislike"}
+
+    def test_liked_pages_use_valid_myrating(self):
+        from mytube.youtube_api import iter_liked_video_pages
+
+        seen = {}
+
+        class Videos:
+            def list(self, **kw):
+                seen.update(kw)
+                return FakeRequest({"items": [], "pageInfo": {"totalResults": 0}})
+
+        class Client:
+            def videos(self):
+                return Videos()
+
+        list(iter_liked_video_pages(Client(), sleep=lambda s: None))
+        assert seen["myRating"] in self.ALLOWED_MY_RATING, (
+            f"myRating={seen['myRating']!r} is rejected by the real API "
+            f"(allowed: {sorted(self.ALLOWED_MY_RATING)})"
+        )
+
+    def test_discovery_module_docs_match_call(self):
+        """The 'liked' spelling also lives in prose; keep it honest so the
+        next reader doesn't reintroduce it."""
+        import inspect
+
+        from mytube.youtube_api import iter_liked_video_pages
+
+        src = inspect.getsource(iter_liked_video_pages)
+        assert 'myRating="like"' in src
+        assert 'myRating="liked"' not in src

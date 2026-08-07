@@ -100,6 +100,25 @@ def _set_session_cookie(response: Response, settings: Settings, session_id: str)
 AUTHFLOW_COOKIE = "mytube_authflow"
 
 
+def _post_auth_target(settings: Settings, path: str = "/") -> str:
+    """Where to send the browser after sign-in / connect.
+
+    Normally "/" — in production the SPA and API share an origin. During
+    `npm run dev` the UI is on another port, so DEV_SPA_URL redirects there
+    instead of to a bare 404. Localhost-only: an attacker-supplied value
+    must never turn our OAuth callback into an open redirect.
+    """
+    target = settings.dev_spa_url.strip()
+    if not target:
+        return path
+    from urllib.parse import urlparse
+
+    host = urlparse(target).hostname
+    if host not in ("localhost", "127.0.0.1", "::1"):
+        return path
+    return f"{target.rstrip('/')}{path}"
+
+
 @router.get("/auth/login")
 def auth_login(conn: Conn, settings: Cfg):
     try:
@@ -135,7 +154,7 @@ def auth_callback(
     if old:
         security.delete_session(conn, old)
     session = security.create_session(conn, settings, result["user_id"])
-    response = RedirectResponse("/", status_code=302)
+    response = RedirectResponse(_post_auth_target(settings), status_code=302)
     _set_session_cookie(response, settings, session["session_id"])
     response.delete_cookie(AUTHFLOW_COOKIE, path="/api/auth")
     return response
@@ -188,7 +207,9 @@ def connect_callback(
             "DELETE FROM oauth_tokens WHERE user_id = %s", (result["user_id"],)
         )
         raise HTTPException(status_code=403, detail="connect flow user mismatch")
-    return RedirectResponse("/?connected=1", status_code=302)
+    return RedirectResponse(
+        _post_auth_target(settings, "/?connected=1"), status_code=302
+    )
 
 
 @router.get("/connect/status")
@@ -1077,12 +1098,20 @@ class SettingsIn(BaseModel):
     wildcard_quota: int | None = Field(default=None, ge=0, le=30)
     staleness_penalty_per_day: float | None = Field(default=None, ge=0, le=1)
     duration_fit_weight: float | None = Field(default=None, ge=0, le=1)
+    freshness_weight: float | None = Field(default=None, ge=0, le=1)
+    freshness_half_life_days: float | None = Field(default=None, gt=0, le=3650)
+    freshness_adaptive: bool | None = None
+    llm_model: str | None = Field(default=None, max_length=120)
 
 
 @router.get("/settings")
-def get_settings_api(conn: Conn, session: Sess):
+def get_settings_api(conn: Conn, session: Sess, settings: Cfg):
     row = composer.get_user_settings(conn, session["user_id"])
-    return {k: v for k, v in dict(row).items() if k != "user_id"}
+    out = {k: v for k, v in dict(row).items() if k != "user_id"}
+    # the picker needs the curated list and what an empty choice resolves to
+    out["llm_model_choices"] = settings.llm_model_choices
+    out["llm_model_default"] = settings.llm_model
+    return out
 
 
 @router.put("/settings")
@@ -1130,6 +1159,10 @@ def put_settings(payload: SettingsIn, conn: Conn, session: MutSess):
             wildcard_quota = %(wildcard_quota)s,
             staleness_penalty_per_day = %(staleness_penalty_per_day)s,
             duration_fit_weight = %(duration_fit_weight)s,
+            freshness_weight = %(freshness_weight)s,
+            freshness_half_life_days = %(freshness_half_life_days)s,
+            freshness_adaptive = %(freshness_adaptive)s,
+            llm_model = %(llm_model)s,
             updated_at = now()
         WHERE user_id = %(user_id)s
         """,

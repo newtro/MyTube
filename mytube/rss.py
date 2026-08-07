@@ -36,7 +36,16 @@ class RssEntry:
     channel_title: str | None
 
 
-def parse_feed(xml_text: str) -> list[RssEntry]:
+def parse_feed(xml_text: str, channel_id: str | None = None) -> list[RssEntry]:
+    """Parse a channel upload feed.
+
+    ``channel_id`` is the id we REQUESTED and is authoritative when given:
+    YouTube's FEED-level <yt:channelId> omits the leading "UC" (it mirrors
+    <id>yt:channel:...</id>), while each entry's own <yt:channelId> carries
+    the full 24-char id. Trusting the feed-level value yields a 22-char id
+    that violates the channels FK. Preference order:
+    requested id -> entry-level id -> feed-level id.
+    """
     root = ET.fromstring(xml_text)
     channel_id_el = root.find("yt:channelId", _NS)
     feed_channel_id = channel_id_el.text if channel_id_el is not None else None
@@ -48,6 +57,11 @@ def parse_feed(xml_text: str) -> list[RssEntry]:
         vid_el = entry.find("yt:videoId", _NS)
         if vid_el is None or not vid_el.text:
             continue
+        entry_cid_el = entry.find("yt:channelId", _NS)
+        entry_channel_id = (
+            entry_cid_el.text if entry_cid_el is not None else None
+        )
+        resolved_channel_id = channel_id or entry_channel_id or feed_channel_id
         title_el = entry.find("atom:title", _NS)
         published_el = entry.find("atom:published", _NS)
         published_at: datetime | None = None
@@ -61,7 +75,7 @@ def parse_feed(xml_text: str) -> list[RssEntry]:
                 video_id=vid_el.text,
                 title=title_el.text if title_el is not None else None,
                 published_at=published_at,
-                channel_id=feed_channel_id,
+                channel_id=resolved_channel_id,
                 channel_title=channel_title,
             )
         )
@@ -80,6 +94,7 @@ def fetch_channel_uploads(client: httpx.Client, channel_id: str) -> list[RssEntr
     if response.status_code != 200:
         raise FeedError(channel_id, f"HTTP {response.status_code}")
     try:
-        return parse_feed(response.text)
+        # pass the requested id: the feed-level one is missing its "UC"
+        return parse_feed(response.text, channel_id)
     except ET.ParseError as exc:
         raise FeedError(channel_id, f"malformed XML: {exc}") from exc

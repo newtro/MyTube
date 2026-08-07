@@ -43,6 +43,12 @@ export interface UserSettings {
   wildcard_quota: number;
   staleness_penalty_per_day: number;
   duration_fit_weight: number;
+  freshness_weight: number;
+  freshness_half_life_days: number;
+  freshness_adaptive: boolean;
+  llm_model: string | null;
+  llm_model_choices?: string[];
+  llm_model_default?: string;
 }
 
 export interface QueueItem {

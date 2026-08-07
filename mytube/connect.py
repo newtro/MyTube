@@ -130,7 +130,10 @@ def complete_connect(
         from google.oauth2 import id_token as google_id_token
 
         claims = google_id_token.verify_oauth2_token(
-            id_token_raw, google_requests.Request(), settings.oidc_client_id
+            id_token_raw, google_requests.Request(), settings.oidc_client_id,
+            # same zero-tolerance trap as sign-in (see auth_oidc) — ordinary
+            # NTP drift must not break connecting the YouTube account
+            clock_skew_in_seconds=settings.oidc_clock_skew_seconds,
         )
     except Exception as exc:  # noqa: BLE001 — provider errors become clean 400s
         raise ConnectError(f"id token verification failed: {exc}") from exc

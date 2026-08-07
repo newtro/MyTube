@@ -130,6 +130,44 @@ export function SettingsPage() {
           onChange={(v) => update({ duration_fit_weight: v })}
         />
         <Slider
+          label="Freshness weight"
+          value={settings.freshness_weight}
+          min={0}
+          max={0.5}
+          step={0.01}
+          hint="how hard to demote OLD videos by publish date (0 = age ignored). Raise it for news/AI, lower it for evergreen tutorials."
+          onChange={(v) => update({ freshness_weight: v })}
+        />
+        <div className="setting">
+          <label>
+            <span>Adaptive freshness (per channel)</span>
+          </label>
+          <input
+            type="checkbox"
+            checked={settings.freshness_adaptive}
+            onChange={(e) => update({ freshness_adaptive: e.target.checked })}
+          />
+          <div className="hint">
+            Derive each channel&apos;s half-life from its own upload cadence:
+            a daily news channel decays in days, a monthly tutorial channel
+            over months. Falls back to the fixed value below for channels
+            without enough upload history.
+          </div>
+        </div>
+        <Slider
+          label={
+            settings.freshness_adaptive
+              ? "Freshness half-life (days, fallback)"
+              : "Freshness half-life (days)"
+          }
+          value={settings.freshness_half_life_days}
+          min={1}
+          max={180}
+          step={1}
+          hint="age at which HALF the freshness penalty applies — 14d suits news, 90d+ suits evergreen"
+          onChange={(v) => update({ freshness_half_life_days: v })}
+        />
+        <Slider
           label="Compose hour (local)"
           value={settings.compose_hour}
           min={0}
@@ -146,6 +184,29 @@ export function SettingsPage() {
             onChange={(e) => update({ timezone: e.target.value })}
           />
           <div className="hint">e.g. America/New_York — drives the daily edition date</div>
+        </div>
+        <div className="setting">
+          <label>
+            <span>Steering / query model</span>
+          </label>
+          <select
+            value={settings.llm_model ?? ""}
+            onChange={(e) => update({ llm_model: e.target.value || null })}
+          >
+            <option value="">
+              Default ({settings.llm_model_default})
+            </option>
+            {(settings.llm_model_choices ?? []).map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+          <div className="hint">
+            Parses natural-language steering and bootstraps search queries.
+            Steering waits on this call, so faster is usually better —
+            all listed models are verified against the strict JSON contract.
+          </div>
         </div>
         <div>
           <button className="primary" onClick={save}>

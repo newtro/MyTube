@@ -18,19 +18,54 @@ Takeout export, and the blind scoring itself. Everything else is
      "Production (unverified)" is fine — you'll see an "unverified app"
      warning at consent; click Advanced → continue. That warning is the
      accepted trade-off; do not submit for verification.
-4. **Credentials → Create credentials → OAuth client ID → Desktop app**.
-   Download the JSON to `var/oauth_client_secret.json` (gitignored).
-   (Phase 2's web app will add a separate Web-type client; keep this one
-   for the CLI.)
-5. **Credentials → Create credentials → API key.** Restrict it to the
-   YouTube Data API v3. Put it in `.env` as `YOUTUBE_API_KEY`.
+4. **Credentials → Create credentials → OAuth client ID → Desktop app**
+   (name it e.g. `MyTube CLI`). Download the JSON to
+   `var/oauth_client_secret.json` (gitignored). This one is for the CLI;
+   the web app needs its own client — see §1b.
+5. **Credentials → Create credentials → API key** (name it e.g.
+   `MyTube Server Key`). Under "APIs that can be accessed using this key"
+   select **YouTube Data API v3** — the multi-select has its own **OK**
+   button; pressing Escape silently clears the selection. Put the key in
+   `.env` as `YOUTUBE_API_KEY`.
+
+## 1b. Web OAuth client (Google sign-in — needed from Phase 2 on)
+
+Sign-in and "Connect YouTube" are two flows sharing ONE Web-type client.
+
+1. **Credentials → Create credentials → OAuth client ID → Web application**
+   (name it e.g. `MyTube Web`).
+2. Add **all** the Authorized redirect URIs you'll use — both callbacks,
+   for every origin you serve from:
+   - `http://localhost:8123/api/auth/callback` — sign-in, local dev
+   - `http://localhost:8123/api/connect/callback` — YouTube connect, local dev
+   - `https://<your-host>/api/auth/callback` — sign-in, production
+   - `https://<your-host>/api/connect/callback` — YouTube connect, production
+
+   A missing URI shows up as `redirect_uri_mismatch` at consent time.
+   Authorized JavaScript origins are NOT needed (server-side redirect flow).
+3. Put the client id/secret in `.env` as `OIDC_CLIENT_ID` /
+   `OIDC_CLIENT_SECRET`, and set `PUBLIC_BASE_URL` to the matching origin —
+   the app derives its redirect URIs from it, so a mismatch here is the
+   other common cause of `redirect_uri_mismatch`.
+4. Set `ALLOWED_EMAILS` (comma-separated). **Google only proves identity;
+   this allowlist is the authorization.** The first email is the owner —
+   the only account that can adopt CLI-imported history on first sign-in.
+5. Generate `TOKEN_ENCRYPTION_KEY` (encrypts stored refresh tokens):
+   `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
 
 ## 2. OpenRouter
 
 1. https://openrouter.ai → create an API key → `.env` `OPENROUTER_API_KEY`.
-2. The two benchmark models default to
-   `openai/text-embedding-3-small` and `qwen/qwen3-embedding-8b`
-   (`EMBEDDING_MODELS` in `.env` to change — keep >=2, the gate requires it).
+2. Benchmark models: `EMBEDDING_MODELS` in `.env` (keep >=2 — the gate
+   requires it). Verified working on OpenRouter, with observed dimensions:
+   `google/gemini-embedding-001` (3072), `openai/text-embedding-3-large`
+   (3072), `openai/text-embedding-3-small` (1536),
+   `qwen/qwen3-embedding-4b` (2560), `qwen/qwen3-embedding-8b` (4096).
+   Note embeddings are NOT listed in OpenRouter's `/models` catalog (it
+   returns chat models only) — the `/embeddings` endpoint still serves them.
+   Dimensions cost memory, not index size: scoring is numpy in-process with
+   no pgvector index, so the HNSW 2000-dim ceiling does not apply, but the
+   scorer holds taste + candidates in RAM each pass.
 3. Optional, for cost figures in the report: set prices in `.env` as JSON,
    e.g. `EMBEDDING_PRICES_PER_MTOK={"openai/text-embedding-3-small": 0.02}`.
 

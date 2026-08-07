@@ -271,3 +271,9 @@ button:disabled { opacity: 0.5; cursor: default; }
   background: var(--panel); border-radius: 6px;
   display: flex; flex-direction: column; gap: 4px;
 }
+
+/* publish age — freshness is a first-class signal (news/AI content) */
+.meta .age { font-variant-numeric: tabular-nums; }
+.meta .age-fresh   { color: #6fbf73; font-weight: 600; }
+.meta .age-old     { color: #c8a45c; }
+.meta .age-ancient { color: #d08a8a; }

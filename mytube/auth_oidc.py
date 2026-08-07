@@ -120,9 +120,15 @@ def complete_signin(
         raise AuthError("sign-in flow was not initiated by this browser")
 
     tokens = _exchange_code(settings, code, flow["pkce_verifier"])
+    # clock_skew_in_seconds: google-auth defaults to ZERO tolerance, so a
+    # host clock even one second behind Google's rejects every sign-in with
+    # "Token used too early". Ordinary NTP drift is seconds; a small window
+    # is the standard allowance and does not weaken the signature/aud/nonce
+    # checks that actually secure the token.
     verify = verify or (
         lambda raw, aud: google_id_token.verify_oauth2_token(
-            raw, google_requests.Request(), aud
+            raw, google_requests.Request(), aud,
+            clock_skew_in_seconds=settings.oidc_clock_skew_seconds,
         )
     )
     try:

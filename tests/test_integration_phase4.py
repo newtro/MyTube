@@ -517,3 +517,54 @@ class TestPromiseStats:
         conn.commit()
         pool = {c["video_id"]: c for c in eligible_pool(conn, s, user)}
         assert pool["vidbaddd0000"]["overpromise"] == rows[CHANNEL]["overpromise"]
+
+
+class TestChannelCadence:
+    """channel_half_lives derives per-channel decay from real upload gaps."""
+
+    def _channel(self, conn, cid, gap_days, n=6):
+        from datetime import timedelta
+        store.upsert_channel(conn, cid, title=cid)
+        for i in range(n):
+            vid = f"{cid[:8]}vid{i:04d}"[:16]
+            store.upsert_video_stub(conn, vid, first_source="rss", channel_id=cid)
+            store.apply_hydration(
+                conn,
+                HydratedVideo(
+                    video_id=vid, channel_id=cid, channel_title=cid,
+                    title=f"{cid} {i}", description="d", tags=[],
+                    duration_seconds=600,
+                    published_at=NOW - timedelta(days=gap_days * i),
+                    view_count=1, thumbnail_url="https://img/x.jpg",
+                ),
+                shorts_max_seconds=180,
+            )
+
+    def test_daily_vs_monthly(self, conn):
+        from mytube.composer import channel_half_lives
+        s = db_settings()
+        self._channel(conn, "UCdaily00000000000000xx", 1)     # daily
+        self._channel(conn, "UCmonthly000000000000xx", 30)    # monthly
+        conn.commit()
+        hl = channel_half_lives(conn, s)
+        # multiplier 7, clamped to [2, 180]
+        assert hl["UCdaily00000000000000xx"] == pytest.approx(7.0, abs=0.5)
+        assert hl["UCmonthly000000000000xx"] == 180.0        # clamped
+        assert hl["UCdaily00000000000000xx"] < hl["UCmonthly000000000000xx"]
+
+    def test_too_few_uploads_omitted(self, conn):
+        """A channel with < min_samples gaps must not get a noisy cadence."""
+        from mytube.composer import channel_half_lives
+        s = db_settings()
+        self._channel(conn, "UCsparse0000000000000xx", 3, n=2)   # 1 gap only
+        conn.commit()
+        assert "UCsparse0000000000000xx" not in channel_half_lives(conn, s)
+
+    def test_clamped_to_bounds(self, conn):
+        """A frantic uploader can't drive the half-life below the floor."""
+        from mytube.composer import channel_half_lives
+        s = db_settings()
+        self._channel(conn, "UCfrantic000000000000xx", 0.05)   # ~hourly
+        conn.commit()
+        hl = channel_half_lives(conn, s)
+        assert hl["UCfrantic000000000000xx"] >= s.freshness_half_life_min_days

@@ -146,11 +146,59 @@ class Settings(BaseSettings):
     # list = the trending job no-ops)
     trending_categories: Annotated[list[str], NoDecode] = []
     trending_region: str = "US"
-    # LLM for query bootstrap (and Phase 4 steering) via OpenRouter
-    llm_model: str = "openai/gpt-5-mini"
+    # LLM for query bootstrap (and Phase 4 steering) via OpenRouter.
+    # Default is the fastest model that reliably honors the strict JSON
+    # contract — steering is interactive, so latency is the binding
+    # constraint, not frontier reasoning. Verified against the live catalog
+    # and MyTube's own prompts (see llm_model_choices).
+    llm_model: str = "google/gemini-3.5-flash-lite"
     queries_bootstrap_count: int = Field(default=15, ge=1, le=50)
+    # Curated selectable models for the settings UI. Every id was validated
+    # against OpenRouter's live /models catalog AND exercised against the
+    # real steering prompt (all produced contract-valid JSON); the latency
+    # figures are from that run. Ordered fastest-first within each tier.
+    # Freeform ids are still accepted — this list is the guided choice, not
+    # a whitelist, so a new release doesn't require a code change.
+    llm_model_choices: Annotated[list[str], NoDecode] = [
+        # fast — best fit for steering/bootstrap (interactive, small output)
+        "google/gemini-3.5-flash-lite",     # 0.9s   $0.30/$2.50
+        "openai/gpt-5.6-terra",             # 2.0s   $1.00/$6.00
+        "google/gemini-3.6-flash",          # 2.7s   $1.50/$7.50
+        # budget
+        "openai/gpt-5.6-luna",              # 3.3s   $0.10/$0.60
+        "deepseek/deepseek-v4-flash-0731",  # 5.9s   $0.09/$0.18
+        # frontier — more nuance on ambiguous steering, slower + pricier
+        "x-ai/grok-4.5",                    # 5.1s   $2.00/$6.00
+        "anthropic/claude-sonnet-5",        # 5.3s   $2.00/$10.00
+        "anthropic/claude-opus-5",          #        $5.00/$25.00
+        "openai/gpt-5.6-sol",               #        $5.00/$30.00
+    ]
+
+    @field_validator("llm_model_choices", mode="before")
+    @classmethod
+    def _parse_llm_choices(cls, v: object) -> object:
+        if isinstance(v, str):
+            raw = v.strip()
+            v = json.loads(raw) if raw.startswith("[") else [
+                c.strip() for c in raw.split(",") if c.strip()
+            ]
+        if isinstance(v, list):
+            cleaned = [c.strip() if isinstance(c, str) else c for c in v]
+            v = list(dict.fromkeys(c for c in cleaned if c))
+        return v
     # go-deeper (DEC-24/AC-11): user-triggered searches per press
     go_deeper_searches: int = Field(default=3, ge=1, le=10)
+
+    # Tolerance for host-vs-Google clock drift when verifying OIDC id tokens.
+    # google-auth defaults to 0, which rejects sign-in on a host even one
+    # second slow ("Token used too early"). Bounded: a large window would
+    # extend how long a replayed token stays acceptable.
+    oidc_clock_skew_seconds: int = Field(default=30, ge=0, le=300)
+    # Dev only: where to send the browser after sign-in/connect. In
+    # production Caddy serves the SPA on the same origin as the API, so "/"
+    # is right; with `npm run dev` the UI lives on another port and "/" on
+    # the API is a bare 404. Ignored unless it points at localhost.
+    dev_spa_url: str = ""
 
     # ---- Phase 4: steering + promise-vs-delivery -------------------------
     # NL steering (DEC-19/AC-12): directive TTL and LLM output bounds
@@ -166,6 +214,31 @@ class Settings(BaseSettings):
     promise_deficit_weight: float = Field(default=0.8, ge=0)
     # rules-layer penalty: stage-2 adjusted score -= this * overpromise (0..1)
     overpromise_penalty_weight: float = Field(default=0.15, ge=0)
+    # Freshness (§6 rules layer): candidates decay by PUBLISH age, so a
+    # two-year-old "this changes everything" AI video can't outrank today's
+    # news at equal similarity. Bounded exponential: the penalty approaches
+    # freshness_weight and never inverts the score. Half-life is the age at
+    # which HALF the maximum penalty applies.
+    freshness_half_life_days: float = Field(default=14.0, gt=0)
+    freshness_weight: float = Field(default=0.15, ge=0)
+    # Adaptive half-life (per channel): a video's useful life scales with
+    # how fast its channel publishes. A daily news channel buries a 7-day-old
+    # upload under 7 newer siblings; a monthly tutorial channel does not.
+    # half_life = median_upload_gap * multiplier, clamped to [min, max].
+    # Channels without enough history fall back to the fixed half-life.
+    freshness_cadence_multiplier: float = Field(default=7.0, gt=0)
+    freshness_half_life_min_days: float = Field(default=2.0, gt=0)
+    freshness_half_life_max_days: float = Field(default=180.0, gt=0)
+    # minimum consecutive-upload gaps needed before a channel's cadence is
+    # trusted (too few and one burst/hiatus dominates the median)
+    freshness_cadence_min_samples: int = Field(default=3, ge=2)
+    # Exploration draws are uniform (AC-39) so freshness must NOT reweight
+    # them — but it may bound what is ELIGIBLE. Excluding ancient videos
+    # from the eligible set keeps every logged propensity exactly
+    # 1/|eligible| (the snapshot records the set actually drawn from) while
+    # stopping an 8-year-old tutorial from taking an exploration slot.
+    # 0 disables the ceiling.
+    exploration_max_age_days: float = Field(default=365.0, ge=0)
 
     @field_validator("trending_categories", mode="before")
     @classmethod

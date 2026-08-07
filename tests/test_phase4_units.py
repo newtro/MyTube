@@ -175,3 +175,181 @@ class TestOverpromisePenalty:
             if p["slot_class"] != "exploration"
         ]
         assert ranked.index("vidaaaa0001") < ranked.index("vidbbbb0001")
+
+
+class TestFreshness:
+    """§6 rules layer: publish age must demote stale topical content.
+    Found live — a 479-day-old AI video outranked the same day's AI news."""
+
+    def _penalty(self, age_days, weight=0.15, half_life=14.0):
+        from datetime import timedelta
+
+        from mytube.composer import _freshness_penalty
+        pub = None if age_days is None else NOW - timedelta(days=age_days)
+        return _freshness_penalty(pub, NOW, half_life, weight)
+
+    def test_zero_age_no_penalty(self):
+        assert self._penalty(0) == 0.0
+
+    def test_half_life_is_half_the_max(self):
+        assert self._penalty(14) == pytest.approx(0.075, abs=1e-6)
+
+    def test_monotonic_and_bounded(self):
+        prev = -1.0
+        for age in (0, 1, 7, 14, 30, 90, 365, 3650):
+            p = self._penalty(age)
+            assert p >= prev, "penalty must never decrease with age"
+            assert p <= 0.15 + 1e-9, "penalty must not exceed its weight"
+            prev = p
+
+    def test_unknown_publish_date_not_punished(self):
+        assert self._penalty(None) == 0.0
+
+    def test_future_dates_clamp(self):
+        assert self._penalty(-5) == 0.0          # scheduled/premiere drift
+
+    def test_zero_weight_disables(self):
+        assert self._penalty(9999, weight=0) == 0.0
+
+    def test_ranks_fresh_above_stale_at_equal_score(self):
+        """The live failure, as a test: equal similarity, 479d vs today."""
+        from datetime import timedelta
+        pool = [pool_item(f"vidfill{i:05d}", score=0.1) for i in range(10)]
+        fresh = pool_item("vidfresh0001", score=0.69)
+        stale = pool_item("vidstale0001", score=0.693)      # scored HIGHER
+        fresh["published_at"] = NOW
+        stale["published_at"] = NOW - timedelta(days=479)
+        pool += [fresh, stale]
+        us = user_settings(edition_size=12)
+        us["freshness_weight"] = 0.15
+        us["freshness_half_life_days"] = 14
+        plan = plan_edition(pool, make_settings(), us, rng_seed=3, now=NOW)
+        ranked = [p["video_id"] for p in plan["picks"]
+                  if p["slot_class"] != "exploration"]
+        assert ranked.index("vidfresh0001") < ranked.index("vidstale0001")
+
+    def test_disabled_keeps_raw_order(self):
+        """freshness_weight=0 must restore pure-similarity ranking."""
+        from datetime import timedelta
+        pool = [pool_item(f"vidfill{i:05d}", score=0.1) for i in range(10)]
+        fresh = pool_item("vidfresh0001", score=0.69)
+        stale = pool_item("vidstale0001", score=0.693)
+        fresh["published_at"] = NOW
+        stale["published_at"] = NOW - timedelta(days=479)
+        pool += [fresh, stale]
+        us = user_settings(edition_size=12)
+        us["freshness_weight"] = 0
+        us["freshness_half_life_days"] = 14
+        plan = plan_edition(pool, make_settings(), us, rng_seed=3, now=NOW)
+        ranked = [p["video_id"] for p in plan["picks"]
+                  if p["slot_class"] != "exploration"]
+        assert ranked.index("vidstale0001") < ranked.index("vidfresh0001")
+
+
+class TestAdaptiveHalfLife:
+    """Per-channel half-life from upload cadence: daily news decays in days,
+    monthly tutorials over months."""
+
+    def _pick(self, channel_id, half_lives, adaptive=True, fixed=14.0):
+        from mytube.composer import _half_life_for
+        us = user_settings()
+        us["freshness_half_life_days"] = fixed
+        us["freshness_adaptive"] = adaptive
+        return _half_life_for(
+            {"channel_id": channel_id}, us, make_settings(), half_lives
+        )
+
+    def test_uses_channel_cadence(self):
+        assert self._pick("UCnews", {"UCnews": 2.0}) == 2.0
+        assert self._pick("UCevergreen", {"UCevergreen": 180.0}) == 180.0
+
+    def test_unknown_channel_falls_back(self):
+        assert self._pick("UCmystery", {"UCnews": 2.0}) == 14.0
+
+    def test_toggle_off_uses_fixed(self):
+        assert self._pick("UCnews", {"UCnews": 2.0}, adaptive=False) == 14.0
+
+    def test_no_cadence_map_falls_back(self):
+        assert self._pick("UCnews", None) == 14.0
+        assert self._pick("UCnews", {}) == 14.0
+
+    def test_cadence_changes_ranking(self):
+        """Same age, same score: the daily-news video is demoted harder than
+        the evergreen one — the whole point of adapting."""
+        from datetime import timedelta
+        pool = [pool_item(f"vidfill{i:05d}", score=0.1) for i in range(10)]
+        news = pool_item("vidnews00001", score=0.60)
+        ever = pool_item("videver00001", score=0.60)
+        for c, ch in ((news, "UCnews"), (ever, "UCevergreen")):
+            c["channel_id"] = ch
+            c["published_at"] = NOW - timedelta(days=21)
+        pool += [news, ever]
+        us = user_settings(edition_size=12)
+        us["freshness_weight"] = 0.15
+        us["freshness_half_life_days"] = 14
+        us["freshness_adaptive"] = True
+        plan = plan_edition(
+            pool, make_settings(), us, rng_seed=3, now=NOW,
+            half_lives={"UCnews": 2.0, "UCevergreen": 180.0},
+        )
+        ranked = [p["video_id"] for p in plan["picks"]
+                  if p["slot_class"] != "exploration"]
+        assert ranked.index("videver00001") < ranked.index("vidnews00001")
+
+
+class TestExplorationAgeCeiling:
+    """Exploration must stay a UNIFORM draw (AC-39) — the age ceiling bounds
+    the eligible SET, so propensities remain exactly 1/|remaining|."""
+
+    def _pool(self, ages):
+        from datetime import timedelta
+        pool = [pool_item(f"vidhigh{i:04d}", score=0.9) for i in range(10)]
+        for i, age in enumerate(ages):
+            c = pool_item(f"vidold{i:05d}")          # unscored -> explorable
+            c["published_at"] = NOW - timedelta(days=age)
+            pool.append(c)
+        return pool
+
+    def test_ancient_excluded_from_exploration(self):
+        plan = plan_edition(
+            self._pool([1, 5, 3033]), make_settings(),
+            user_settings(edition_size=12), rng_seed=3, now=NOW,
+        )
+        snap = next(p["eligible_snapshot"] for p in plan["picks"]
+                    if p["slot_class"] == "exploration")
+        assert "vidold00002" not in snap          # the 3033-day-old one
+        assert "vidold00000" in snap and "vidold00001" in snap
+
+    def test_propensities_still_exact(self):
+        """The ceiling must not break AC-39: 1/N, 1/(N-1), ... over the
+        POST-filter set."""
+        plan = plan_edition(
+            self._pool([1, 5, 9, 3033]), make_settings(),
+            user_settings(edition_size=12), rng_seed=7, now=NOW,
+        )
+        expl = [p for p in plan["picks"] if p["slot_class"] == "exploration"]
+        n = len(expl[0]["eligible_snapshot"])
+        assert [p["propensity"] for p in expl] == [
+            1 / (n - i) for i in range(len(expl))
+        ]
+
+    def test_ceiling_disabled_allows_ancient(self):
+        plan = plan_edition(
+            self._pool([3033]), make_settings(exploration_max_age_days=0),
+            user_settings(edition_size=12), rng_seed=3, now=NOW,
+        )
+        snap = next(p["eligible_snapshot"] for p in plan["picks"]
+                    if p["slot_class"] == "exploration")
+        assert "vidold00000" in snap
+
+    def test_unknown_publish_date_still_eligible(self):
+        pool = [pool_item(f"vidhigh{i:04d}", score=0.9) for i in range(10)]
+        pool.append(pool_item("vidnodate001"))       # published_at = NOW default
+        undated = pool_item("vidnull00001")
+        undated["published_at"] = None
+        pool.append(undated)
+        plan = plan_edition(pool, make_settings(),
+                            user_settings(edition_size=12), rng_seed=3, now=NOW)
+        snap = next(p["eligible_snapshot"] for p in plan["picks"]
+                    if p["slot_class"] == "exploration")
+        assert "vidnull00001" in snap

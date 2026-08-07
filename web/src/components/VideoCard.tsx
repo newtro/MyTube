@@ -3,6 +3,36 @@ import { api } from "../api";
 import type { Card } from "../types";
 import { confirmModal, ReasonModal } from "./Modal";
 
+/** Compact publish age — freshness is a first-class signal for news/AI
+ *  content, so every non-blind card states how old it is. */
+function formatAge(published: string | null | undefined): string {
+  if (!published) return "";
+  const then = new Date(published).getTime();
+  if (Number.isNaN(then)) return "";
+  const mins = Math.floor((Date.now() - then) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  if (days < 30) return `${Math.floor(days / 7)}w ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  const years = (days / 365).toFixed(days < 730 ? 1 : 0);
+  return `${years}y ago`;
+}
+
+/** Old content is easy to miss in a wall of cards — flag it. */
+function ageClass(published: string | null | undefined): string {
+  if (!published) return "";
+  const days = (Date.now() - new Date(published).getTime()) / 86400000;
+  if (Number.isNaN(days)) return "";
+  if (days >= 365) return " age-ancient";
+  if (days >= 90) return " age-old";
+  if (days <= 2) return " age-fresh";
+  return "";
+}
+
 function formatDuration(seconds: number | null): string {
   if (!seconds) return "";
   const h = Math.floor(seconds / 3600);
@@ -202,6 +232,14 @@ export function VideoCard({ card: initial, onPlay, onImpressed, onChanged }: Vid
         <div className="meta">
           {!card.blind && card.channel_title && <span>{card.channel_title}</span>}
           {!card.blind && <span>{formatDuration(card.duration_seconds)}</span>}
+          {!card.blind && card.published_at && (
+            <span
+              className={`age${ageClass(card.published_at)}`}
+              title={new Date(card.published_at).toLocaleString()}
+            >
+              {formatAge(card.published_at)}
+            </span>
+          )}
         </div>
         <div className="actions">
           <button className="primary" onClick={play}>

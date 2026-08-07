@@ -38,8 +38,15 @@ def create_directive(
         raise SteeringError("steering text must not be empty")
     if len(text) > 1000:
         raise SteeringError("steering text too long (max 1000 chars)")
+    # a per-user model choice overrides the server default (NULL = default)
+    chosen = conn.execute(
+        "SELECT llm_model FROM user_settings WHERE user_id = %s", (user_id,)
+    ).fetchone()
+    effective = settings
+    if chosen and chosen["llm_model"]:
+        effective = settings.model_copy(update={"llm_model": chosen["llm_model"]})
     try:
-        parsed = llm.generate_steering(settings, text)
+        parsed = llm.generate_steering(effective, text)
     except llm.LLMError as exc:
         raise SteeringError(f"could not parse steering request: {exc}") from exc
 
