@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Secrets & runtime artifacts (tokens, benchmark outputs, client secrets)
+.env
+var/
+
+# Node (Phase 2 SPA)
+node_modules/
+web/dist/
+
+# OS / editor
+.DS_Store
+Thumbs.db

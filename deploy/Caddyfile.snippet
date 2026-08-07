@@ -1,0 +1,23 @@
+# Append to /etc/caddy/Caddyfile. Subdomain is an open decision (plan §17)
+# — replace mytube.CHANGE-ME.example with the real one before applying.
+#
+# NEVER restart caddy on this VM (~40 live sites). Apply with:
+#   sudo caddy validate --config /etc/caddy/Caddyfile
+#   sudo caddy reload   --config /etc/caddy/Caddyfile
+
+mytube.CHANGE-ME.example {
+    encode gzip
+
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8123
+    }
+    handle /healthz {
+        reverse_proxy 127.0.0.1:8123
+    }
+    handle {
+        # SPA static build: `cd web && npm run build` then copy dist here
+        root * /home/ubuntu/mytube/web/dist
+        try_files {path} /index.html
+        file_server
+    }
+}

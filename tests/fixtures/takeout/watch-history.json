@@ -1,0 +1,74 @@
+[
+  {
+    "header": "YouTube",
+    "title": "Watched Building a Workbench — Part 1",
+    "titleUrl": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "subtitles": [
+      {"name": "Wood Shop", "url": "https://www.youtube.com/channel/UCwoodshop000000000000xx"}
+    ],
+    "time": "2025-11-15T22:33:44.123Z",
+    "products": ["YouTube"]
+  },
+  {
+    "header": "YouTube",
+    "title": "Watched Building a Workbench — Part 1",
+    "titleUrl": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "subtitles": [
+      {"name": "Wood Shop", "url": "https://www.youtube.com/channel/UCwoodshop000000000000xx"}
+    ],
+    "time": "2025-11-15T22:33:44.123Z",
+    "products": ["YouTube"]
+  },
+  {
+    "header": "YouTube",
+    "title": "Watched Geopolitics of Semiconductors",
+    "titleUrl": "https://www.youtube.com/watch?v=abc123def45",
+    "subtitles": [
+      {"name": "Geo Channel", "url": "https://www.youtube.com/channel/UCgeochannel0000000000xx"}
+    ],
+    "time": "2026-01-02T10:00:00.000Z",
+    "products": ["YouTube"]
+  },
+  {
+    "header": "YouTube",
+    "title": "Watched Quick short",
+    "titleUrl": "https://www.youtube.com/shorts/short123456",
+    "time": "2026-01-03T09:00:00.000Z",
+    "products": ["YouTube"]
+  },
+  {
+    "header": "YouTube",
+    "title": "Watched a video that has been removed",
+    "time": "2025-12-25T12:00:00.000Z",
+    "products": ["YouTube"]
+  },
+  {
+    "header": "YouTube",
+    "title": "Watched Some sponsored thing",
+    "titleUrl": "https://www.youtube.com/watch?v=ad1234567xy",
+    "time": "2026-01-04T08:00:00.000Z",
+    "details": [{"name": "From Google Ads"}],
+    "products": ["YouTube"]
+  },
+  {
+    "header": "YouTube Music",
+    "title": "Watched Synthwave Mix 2026",
+    "titleUrl": "https://music.youtube.com/watch?v=music123456",
+    "time": "2026-01-05T07:00:00.000Z",
+    "products": ["YouTube Music"]
+  },
+  {
+    "header": "YouTube",
+    "title": "Watched Broken timestamp entry",
+    "titleUrl": "https://www.youtube.com/watch?v=brokentime1",
+    "time": "not-a-timestamp",
+    "products": ["YouTube"]
+  },
+  {
+    "header": "YouTube",
+    "title": "Visited a community post",
+    "time": "2026-01-06T06:00:00.000Z",
+    "products": ["YouTube"]
+  },
+  "corrupt non-object entry"
+]

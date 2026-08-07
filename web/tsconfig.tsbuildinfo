@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/components/modal.tsx","./src/components/player.tsx","./src/components/videocard.tsx","./src/pages/editionpage.tsx","./src/pages/opspage.tsx","./src/pages/queuepage.tsx","./src/pages/settingspage.tsx","./src/pages/steeringpage.tsx","./src/pages/tastepage.tsx"],"version":"5.9.3"}

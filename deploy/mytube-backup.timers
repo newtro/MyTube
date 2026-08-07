@@ -1,0 +1,61 @@
+# Backup scheduling (AC-43). Install as five unit files under
+# /etc/systemd/system/ (split on the "# ---" markers), then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mytube-backup-full.timer mytube-backup-durable.timer
+#
+# A failed backup run must be VISIBLE: OnFailure raises a MyTube ops alert
+# so the (Phase 4) dashboard and /api/ops/summary surface it.
+
+# --- mytube-backup-alert@.service ---
+[Unit]
+Description=Raise a MyTube ops alert for a failed backup unit (%i)
+
+[Service]
+Type=oneshot
+User=ubuntu
+EnvironmentFile=/home/ubuntu/mytube/backup.env
+ExecStart=/usr/bin/psql -d mytube -c "INSERT INTO ops_alerts (kind, subject, message) VALUES ('backup_failure', '%i', 'systemd unit %i failed — check journalctl -u %i') ON CONFLICT DO NOTHING"
+
+# --- mytube-backup-full.service ---
+[Unit]
+Description=MyTube nightly full backup
+OnFailure=mytube-backup-alert@%n.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+EnvironmentFile=/home/ubuntu/mytube/backup.env
+ExecStart=/home/ubuntu/mytube/scripts/backup-full.sh
+
+# --- mytube-backup-full.timer ---
+[Unit]
+Description=MyTube nightly full backup timer
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
+# --- mytube-backup-durable.service ---
+[Unit]
+Description=MyTube weekly durable-only backup
+OnFailure=mytube-backup-alert@%n.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+EnvironmentFile=/home/ubuntu/mytube/backup.env
+ExecStart=/home/ubuntu/mytube/scripts/backup-durable.sh
+
+# --- mytube-backup-durable.timer ---
+[Unit]
+Description=MyTube weekly durable-only backup timer
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

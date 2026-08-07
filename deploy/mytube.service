@@ -1,0 +1,22 @@
+# /etc/systemd/system/mytube.service
+# EXACTLY ONE worker: this process owns APScheduler (§4). Scaling out
+# requires moving jobs to their own unit first.
+[Unit]
+Description=MyTube API + ingestion scheduler
+After=network-online.target postgresql@16-main.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/mytube
+EnvironmentFile=/home/ubuntu/mytube/.env
+ExecStart=/home/ubuntu/.local/bin/uv run uvicorn mytube.app:app --host 127.0.0.1 --port 8123 --workers 1
+Restart=on-failure
+RestartSec=5
+# hygiene on the shared VM
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

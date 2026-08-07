@@ -1,0 +1,101 @@
+# Phase 0 setup runbook — proof of ranking
+
+Owner actions that can't be automated: Google Cloud console clicks, the
+Takeout export, and the blind scoring itself. Everything else is
+`mytube` CLI commands. Plan references: §13 Phase 0, ASM-1, DEC-5, DEC-13.
+
+## 1. Google Cloud project + OAuth app (ASM-1 — read carefully)
+
+1. https://console.cloud.google.com → create project, e.g. `mytube-personal`.
+2. **APIs & Services → Library** → enable **YouTube Data API v3**.
+3. **APIs & Services → OAuth consent screen**:
+   - User type: **External**.
+   - Fill the minimal app info (name `MyTube`, your email everywhere).
+   - Scopes: add `.../auth/youtube.readonly` (read-only forever — DEC-26).
+   - **Publishing status: click "Publish app" so it is IN PRODUCTION.**
+     Do NOT leave it in Testing mode: testing-mode refresh tokens expire
+     after 7 days and the pipeline dies silently a week later (ASM-1).
+     "Production (unverified)" is fine — you'll see an "unverified app"
+     warning at consent; click Advanced → continue. That warning is the
+     accepted trade-off; do not submit for verification.
+4. **Credentials → Create credentials → OAuth client ID → Desktop app**.
+   Download the JSON to `var/oauth_client_secret.json` (gitignored).
+   (Phase 2's web app will add a separate Web-type client; keep this one
+   for the CLI.)
+5. **Credentials → Create credentials → API key.** Restrict it to the
+   YouTube Data API v3. Put it in `.env` as `YOUTUBE_API_KEY`.
+
+## 2. OpenRouter
+
+1. https://openrouter.ai → create an API key → `.env` `OPENROUTER_API_KEY`.
+2. The two benchmark models default to
+   `openai/text-embedding-3-small` and `qwen/qwen3-embedding-8b`
+   (`EMBEDDING_MODELS` in `.env` to change — keep >=2, the gate requires it).
+3. Optional, for cost figures in the report: set prices in `.env` as JSON,
+   e.g. `EMBEDDING_PRICES_PER_MTOK={"openai/text-embedding-3-small": 0.02}`.
+
+## 3. Takeout export (JSON format!)
+
+1. https://takeout.google.com → Deselect all → select **YouTube and YouTube Music**.
+2. Click "All YouTube data included" → keep only **history** and **playlists**.
+3. Click "Multiple formats" → set **History: JSON** (the HTML export is
+   rejected by the importer).
+4. Export, download, unzip. You need:
+   - `Takeout/YouTube and YouTube Music/history/watch-history.json`
+   - `Takeout/YouTube and YouTube Music/playlists/Liked videos.csv`
+
+## 4. Database (shared VM cluster — treat as shared infra)
+
+On the VM (`ssh vm`), one time. Never restart Postgres (plan §12).
+
+```bash
+# pgvector for PG16 if not already present (harmless if it is)
+sudo apt-get install -y postgresql-16-pgvector
+
+sudo -u postgres psql -c "CREATE ROLE mytube LOGIN PASSWORD '<generate-one>'"
+sudo -u postgres psql -c "CREATE DATABASE mytube OWNER mytube"
+sudo -u postgres psql -d mytube -c "CREATE EXTENSION vector;"
+```
+
+Locally, keep a tunnel open while running the pipeline:
+
+```bash
+ssh -N -L 5433:localhost:5432 vm
+# .env → DATABASE_URL=postgresql://mytube:<password>@localhost:5433/mytube
+```
+
+(Local development against your own Postgres works the same way — create a
+`mytube_dev` DB, install pgvector, point `DATABASE_URL` at it.)
+
+## 5. Run the pipeline
+
+```bash
+uv sync
+uv run mytube db migrate
+uv run mytube auth login          # browser consent; expect the "unverified" warning
+uv run mytube takeout import ".../watch-history.json" --likes ".../Liked videos.csv"
+uv run mytube subs pull
+uv run mytube candidates pull-rss
+uv run mytube hydrate             # 1 unit per 50 videos; prints units spent
+uv run mytube taste build
+uv run mytube benchmark freeze
+uv run mytube benchmark run       # embeds with every model; prints cost/latency
+uv run mytube benchmark sheet
+```
+
+## 6. Blind scoring + verdict (the go/no-go gate)
+
+1. Open `var/benchmark/sheet-<run>.csv`. **Open nothing else in
+   `var/benchmark/` until the verdict is computed** — the `mapping-*.json`
+   and `run-*.json` files both reveal which list each video came from and
+   would unblind the gate.
+2. For every row, put `y` or `n` in `would_watch` — "would I actually watch
+   this?", judged on title/channel/duration (click the URL if it helps).
+3. `uv run mytube benchmark verdict`
+
+**GO** = best model >= 60% would-watch on its top-20 AND beats both the
+recency and random baselines. Record the winning model; DEC-5 is confirmed.
+
+**NO-GO** = stop the build. Re-read DEC-13: options are richer metadata
+inputs (chapters, more tags), a different embedding model class, or the
+reserved transcript-enricher slot. Do not proceed to Phase 1 on a no-go.
